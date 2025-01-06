@@ -19,12 +19,17 @@ pub enum NalInterest {
 /// your handler to own state which can be accessed via [NalAccumulator::handler],
 /// [NalAccumulator::handler_mut], or [NalAccumulator::into_handler].
 pub trait AccumulatedNalHandler {
-    fn nal(&mut self, nal: RefNal<'_>) -> NalInterest;
+    type Error;
+    fn nal(&mut self, nal: RefNal<'_>) -> Result<NalInterest, Self::Error>;
 }
 
+#[derive(Debug)]
+pub enum Never {}
+
 impl<F: FnMut(RefNal<'_>) -> NalInterest> AccumulatedNalHandler for F {
-    fn nal(&mut self, nal: RefNal<'_>) -> NalInterest {
-        (self)(nal)
+    type Error = Never;
+    fn nal(&mut self, nal: RefNal<'_>) -> Result<NalInterest, Never> {
+        Ok((self)(nal))
     }
 }
 
@@ -33,11 +38,12 @@ impl<F: FnMut(RefNal<'_>) -> NalInterest> AccumulatedNalHandler for F {
 /// It's probably unnecessary to provide your own implementation of this trait
 /// except when benchmarking or testing a parser.
 pub trait NalFragmentHandler {
+    type Error;
     /// Pushes a fragment of a NAL.
     ///
     /// The caller must ensure that each element of `bufs` (if there are any)
     /// is non-empty.
-    fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool);
+    fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool) -> Result<(), Self::Error>;
 }
 
 /// NAL accumulator for push parsers.
@@ -128,22 +134,23 @@ impl<H: AccumulatedNalHandler> NalAccumulator<H> {
     }
 }
 impl<H: AccumulatedNalHandler> NalFragmentHandler for NalAccumulator<H> {
+    type Error = H::Error;
     /// Calls `nal_handler` with accumulated NAL unless any of the following are true:
     /// *   a previous call on the same NAL returned [`NalInterest::Ignore`].
     /// *   the NAL is totally empty.
     /// *   `bufs` is empty and `end` is false.
-    fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool) {
+    fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool) -> Result<(), Self::Error> {
         if self.interest != NalInterest::Ignore {
             let nal = if !self.buf.is_empty() {
                 RefNal::new(&self.buf[..], bufs, end)
             } else if bufs.is_empty() {
-                return; // no-op.
+                return Ok(()); // no-op.
             } else {
                 RefNal::new(bufs[0], &bufs[1..], end)
             };
 
             // Call the NAL handler. Avoid copying unless necessary.
-            match self.nal_handler.nal(nal) {
+            match self.nal_handler.nal(nal)? {
                 NalInterest::Buffer if !end => {
                     let len = bufs.iter().map(|b| b.len()).sum();
                     self.buf.reserve(len);
@@ -159,6 +166,7 @@ impl<H: AccumulatedNalHandler> NalFragmentHandler for NalAccumulator<H> {
             self.buf.clear();
             self.interest = NalInterest::Buffer;
         }
+        Ok(())
     }
 }
 impl<H: AccumulatedNalHandler + std::fmt::Debug> std::fmt::Debug for NalAccumulator<H> {
@@ -192,16 +200,18 @@ mod test {
             NalInterest::Buffer
         };
         let mut accumulator = NalAccumulator::new(handler);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[], true);
-        accumulator.nal_fragment(&[&[0b0101_0001], &[1]], true);
-        accumulator.nal_fragment(&[&[0b0101_0001]], false);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[&[2]], true);
-        accumulator.nal_fragment(&[&[0b0101_0001]], false);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[&[3]], false);
-        accumulator.nal_fragment(&[], true);
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[], true).unwrap();
+        accumulator
+            .nal_fragment(&[&[0b0101_0001], &[1]], true)
+            .unwrap();
+        accumulator.nal_fragment(&[&[0b0101_0001]], false).unwrap();
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[&[2]], true).unwrap();
+        accumulator.nal_fragment(&[&[0b0101_0001]], false).unwrap();
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[&[3]], false).unwrap();
+        accumulator.nal_fragment(&[], true).unwrap();
         assert_eq!(
             nals,
             &[
@@ -218,16 +228,18 @@ mod test {
             NalInterest::Ignore
         };
         let mut accumulator = NalAccumulator::new(handler);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[], true);
-        accumulator.nal_fragment(&[&[0b0101_0001, 1]], true);
-        accumulator.nal_fragment(&[&[0b0101_0001]], false);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[&[2]], true);
-        accumulator.nal_fragment(&[&[0b0101_0001]], false);
-        accumulator.nal_fragment(&[], false);
-        accumulator.nal_fragment(&[&[3]], false);
-        accumulator.nal_fragment(&[], true);
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[], true).unwrap();
+        accumulator
+            .nal_fragment(&[&[0b0101_0001, 1]], true)
+            .unwrap();
+        accumulator.nal_fragment(&[&[0b0101_0001]], false).unwrap();
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[&[2]], true).unwrap();
+        accumulator.nal_fragment(&[&[0b0101_0001]], false).unwrap();
+        accumulator.nal_fragment(&[], false).unwrap();
+        accumulator.nal_fragment(&[&[3]], false).unwrap();
+        accumulator.nal_fragment(&[], true).unwrap();
         assert_eq!(
             nals,
             &[

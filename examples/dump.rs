@@ -139,13 +139,13 @@ fn main() {
     loop {
         match file.read(&mut buf[..]).expect("read") {
             0 => break,
-            n => reader.push(&buf[0..n]),
+            n => reader.push(&buf[0..n]).unwrap(),
         }
     }
 
     // If we're sure that the entire current NAL has been pushed, then we can call this to signal
     // that the parser should immediately stop waiting for a new NAL marker.
-    reader.reset();
+    reader.reset().unwrap();
 }
 
 fn hex_dump(nal: &RefNal) {

@@ -92,7 +92,7 @@ fn reader(buf: Vec<u8>) {
         NalInterest::Ignore
     });
 
-    reader.push(&buf);
+    reader.push(&buf).unwrap();
 }
 
 library_benchmark_group!(

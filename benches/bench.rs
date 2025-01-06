@@ -29,26 +29,31 @@ struct NullNalReader {
     push: u64,
     end: u64,
 }
+#[derive(Debug)]
+enum Never {}
 impl NalFragmentHandler for NullNalReader {
-    fn nal_fragment(&mut self, _bufs: &[&[u8]], end: bool) {
+    type Error = Never;
+    fn nal_fragment(&mut self, _bufs: &[&[u8]], end: bool) -> Result<(), Never> {
         self.push += 1;
         if end {
             self.end += 1;
         }
+        Ok(())
     }
 }
 
 fn bench_annexb<'a, H, P>(mut r: AnnexBReader<H>, b: &mut Bencher, pushes: P)
 where
     H: NalFragmentHandler,
+    H::Error: core::fmt::Debug,
     P: Iterator<Item = &'a [u8]> + Clone,
 {
     b.iter(|| {
         for p in pushes.clone() {
-            r.push(p);
+            r.push(p).unwrap();
         }
-        r.reset();
-    })
+        r.reset().unwrap();
+    });
 }
 
 fn h264_reader(c: &mut Criterion) {

@@ -127,7 +127,7 @@ impl<H: NalFragmentHandler> AnnexBReader<H> {
         self.inner
     }
 
-    pub fn push(&mut self, buf: &[u8]) {
+    pub fn push(&mut self, buf: &[u8]) -> Result<(), H::Error> {
         // When in a NAL unit, start is the first index in buf with a byte to
         // be pushed. Note that due to backtracking, sometimes 0x00 bytes
         // must be pushed that logically precede buf.
@@ -175,12 +175,12 @@ impl<H: NalFragmentHandler> AnnexBReader<H> {
                 },
                 ParseState::InUnitTwoZero => match b {
                     0x00 => {
-                        self.maybe_emit(buf, fake_and_start, i, 2, true);
+                        self.maybe_emit(buf, fake_and_start, i, 2, true)?;
                         fake_and_start = None;
                         self.to(ParseState::StartTwoZero);
                     }
                     0x01 => {
-                        self.maybe_emit(buf, fake_and_start, i, 2, true);
+                        self.maybe_emit(buf, fake_and_start, i, 2, true)?;
                         fake_and_start = Some((0, i + 1));
                         self.to(ParseState::InUnit);
                     }
@@ -196,8 +196,9 @@ impl<H: NalFragmentHandler> AnnexBReader<H> {
                 buf.len(),
                 in_unit.backtrack_bytes,
                 false,
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// To be invoked when calling code knows that the end of a sequence of NAL Unit data has been
@@ -206,19 +207,20 @@ impl<H: NalFragmentHandler> AnnexBReader<H> {
     /// For example, if the containing data structure demarcates the end of a sequence of NAL
     /// Units explicitly, the parser for that structure should call `end_units()` once all data
     /// has been passed to the `push()` function.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> Result<(), H::Error> {
         if let Some(in_unit) = self.state.in_unit() {
             // if we were in the middle of parsing a sequence of 0x00 bytes that might have become
             // a start-code, but actually reached the end of input, then we will now need to emit
             // those 0x00 bytes that we had been holding back,
             if in_unit.backtrack_bytes > 0 {
                 self.inner
-                    .nal_fragment(&[&[0u8; 2][..in_unit.backtrack_bytes]], true);
+                    .nal_fragment(&[&[0u8; 2][..in_unit.backtrack_bytes]], true)?;
             } else {
-                self.inner.nal_fragment(&[], true);
+                self.inner.nal_fragment(&[], true)?;
             }
         }
         self.to(ParseState::Start);
+        Ok(())
     }
 
     fn to(&mut self, new_state: ParseState) {
@@ -232,22 +234,23 @@ impl<H: NalFragmentHandler> AnnexBReader<H> {
         end: usize,
         backtrack: usize,
         is_end: bool,
-    ) {
+    ) -> Result<(), H::Error> {
         match fake_and_start {
             Some((fake, start)) if start + backtrack < end => {
                 if fake > 0 {
                     self.inner.nal_fragment(
                         &[&[0u8; 2][..fake], &buf[start..end - backtrack]][..],
                         is_end,
-                    );
+                    )?;
                 } else {
                     self.inner
-                        .nal_fragment(&[&buf[start..end - backtrack]][..], is_end);
+                        .nal_fragment(&[&buf[start..end - backtrack]][..], is_end)?;
                 };
             }
-            Some(_) if is_end => self.inner.nal_fragment(&[], true),
+            Some(_) if is_end => self.inner.nal_fragment(&[], true)?,
             _ => {}
         }
+        Ok(())
     }
 
     fn err(&mut self, b: u8) {
@@ -269,8 +272,11 @@ mod tests {
         ended: u32,
         data: Vec<u8>,
     }
+    #[derive(Debug)]
+    enum Never {}
     impl NalFragmentHandler for MockFragmentHandler {
-        fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool) {
+        type Error = Never;
+        fn nal_fragment(&mut self, bufs: &[&[u8]], end: bool) -> Result<(), Never> {
             assert!(!bufs.is_empty() || end);
             for buf in bufs {
                 self.data.extend_from_slice(buf);
@@ -278,6 +284,7 @@ mod tests {
             if end {
                 self.ended += 1;
             }
+            Ok(())
         }
     }
 
@@ -290,7 +297,7 @@ mod tests {
             3, // NAL data
             0, 0, 1, // end-code
         ];
-        r.push(&data[..]);
+        r.push(&data[..]).unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3u8][..]);
         assert_eq!(1, mock.ended);
@@ -305,7 +312,7 @@ mod tests {
             3, // NAL data
             0, 0, 1, // end-code
         ];
-        r.push(&data[..]);
+        r.push(&data[..]).unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3u8][..]);
         assert_eq!(1, mock.ended);
@@ -324,7 +331,7 @@ mod tests {
             0, 0, 3, // cabac_zero_word + emulation_prevention_three_byte
             0, 0, 0, 1, // start-code
         ];
-        r.push(&data[..]);
+        r.push(&data[..]).unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3, 0x80, 0, 0, 3, 0, 0, 3][..]);
         assert_eq!(1, mock.ended);
@@ -343,7 +350,7 @@ mod tests {
             0,    // trailing_zero_8bits
             0, 0, 0, 1, // start-code
         ];
-        r.push(&data[..]);
+        r.push(&data[..]).unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3, 0x80][..]);
         assert_eq!(1, mock.ended);
@@ -365,7 +372,7 @@ mod tests {
             0x80, // 1 stop-bit + 7 alignment-zero-bits
             0, 0, 1, // start-code
         ];
-        r.push(&data[..]);
+        r.push(&data[..]).unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3, 0x80, 2, 3, 0x80][..]);
         assert_eq!(2, mock.ended);
@@ -379,8 +386,8 @@ mod tests {
             0, 0, 0, 1, // start-code
             3, 0, // NAL data
         ];
-        r.push(&data[..]);
-        r.reset();
+        r.push(&data[..]).unwrap();
+        r.reset().unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(&mock.data[..], &[3u8, 0u8][..]);
         assert_eq!(1, mock.ended);
@@ -395,11 +402,11 @@ mod tests {
             2, 3, // NAL data
             0, 0, 1, // nd-code
         ];
-        r.push(&data[..5]); // half-way through the NAL Unit
+        r.push(&data[..5]).unwrap(); // half-way through the NAL Unit
         let mock = r.fragment_handler_ref();
         assert_eq!(&mock.data[..], &[2u8][..]);
         assert_eq!(0, mock.ended);
-        r.push(&data[5..]); // second half of the NAL Unit
+        r.push(&data[5..]).unwrap(); // second half of the NAL Unit
         let mock = r.fragment_handler_ref();
         assert_eq!(&mock.data[..], &[2u8, 3u8][..]);
         assert_eq!(1, mock.ended);
@@ -493,9 +500,9 @@ mod tests {
             let mock = MockFragmentHandler::default();
             let mut r = AnnexBReader::for_fragment_handler(mock);
             let (head, tail) = data.split_at(i);
-            r.push(&head[..]);
-            r.push(&tail[..]);
-            r.reset();
+            r.push(&head[..]).unwrap();
+            r.push(&tail[..]).unwrap();
+            r.reset().unwrap();
             let mock = r.into_fragment_handler();
             assert_eq!(3, mock.ended);
             assert_eq!(&mock.data[..], &expected[..]);
@@ -588,9 +595,9 @@ mod tests {
         let mock = MockFragmentHandler::default();
         let mut r = AnnexBReader::for_fragment_handler(mock);
         for i in 0..data.len() {
-            r.push(&data[i..i + 1]);
+            r.push(&data[i..i + 1]).unwrap();
         }
-        r.reset();
+        r.reset().unwrap();
         let mock = r.into_fragment_handler();
         assert_eq!(3, mock.ended);
         assert_eq!(&mock.data[..], &expected[..]);
